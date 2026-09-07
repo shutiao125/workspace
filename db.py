@@ -22,19 +22,25 @@ def init_db():
             tx_date  TEXT NOT NULL,           -- YYYY-MM-DD
             type     TEXT NOT NULL,           -- 支出 / 收入
             category TEXT NOT NULL,           -- 分类
+            subcategory TEXT DEFAULT '',      -- 细分类
             amount   REAL NOT NULL,
             note     TEXT DEFAULT '',
             source   TEXT DEFAULT 'text',     -- text / voice / manual
             created_at TEXT DEFAULT (datetime('now','localtime')))""")
+        # 迁移: 老库补充 subcategory 列
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(records)")]
+        if "subcategory" not in cols:
+            conn.execute("ALTER TABLE records ADD COLUMN subcategory TEXT DEFAULT ''")
 
 
 def add_record(openid: str, tx_date: str, rtype: str, category: str,
-               amount: float, note: str = "", source: str = "text"):
+               amount: float, note: str = "", source: str = "text",
+               subcategory: str = ""):
     with _lock, _conn() as conn:
         conn.execute(
-            "INSERT INTO records(openid,tx_date,type,category,amount,note,source) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (openid, tx_date, rtype, category, amount, note, source))
+            "INSERT INTO records(openid,tx_date,type,category,subcategory,"
+            "amount,note,source) VALUES(?,?,?,?,?,?,?,?)",
+            (openid, tx_date, rtype, category, subcategory, amount, note, source))
 
 
 def _sums(where: str, args: tuple, openid: str) -> dict:
@@ -70,7 +76,7 @@ def recent_records(openid: str, limit: int = 5) -> list:
     """最近几笔记录(新→旧), 含id供删除用"""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, tx_date, type, category, amount, note FROM records "
+            "SELECT id, tx_date, type, category, subcategory, amount, note FROM records "
             "WHERE openid=? ORDER BY id DESC LIMIT ?", (openid, limit)).fetchall()
     return [dict(r) for r in rows]
 
@@ -95,6 +101,6 @@ def day_records(openid: str, day: str) -> list:
     """某一天的全部记录(旧→新), 含id供删除用"""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, tx_date, type, category, amount, note FROM records "
+            "SELECT id, tx_date, type, category, subcategory, amount, note FROM records "
             "WHERE openid=? AND tx_date=? ORDER BY id", (openid, day)).fetchall()
     return [dict(r) for r in rows]

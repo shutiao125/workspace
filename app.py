@@ -77,7 +77,7 @@ def _compact_ymd(digits: str):
 
 def _cat_disp(r):
     """显示用分类: 大分类·细分类"""
-    return r["category"] + (f"·{r['subcategory']}" if r["subcategory"] else "")
+    return r["category"] + (f"·{r.get('subcategory')}" if r.get("subcategory") else "")
 
 
 def handle_record(openid: str, text: str, source: str) -> str:

@@ -70,9 +70,9 @@ def _regex_parse(text: str) -> dict:
     amount = round(float(m.group(1)), 2) if m else 0.0
     rtype = "收入" if any(k in text for k in ("工资", "到账", "收入", "进账", "收到红包")) else "支出"
     category, subcategory = "其他", ""
-    for pattern, cat, sub in KEYWORDS:
+    for pattern, cat in KEYWORD_CATEGORY:
         if re.search(pattern, text):
-            category, subcategory = cat, sub
+            category = cat
             break
     return {"date": str(d), "type": rtype, "category": category,
             "subcategory": subcategory, "amount": amount, "note": text[:20]}
@@ -95,7 +95,8 @@ def ai_report(kind: str, data: dict) -> str | None:
     try:
         payload = {"model": LLM_MODEL, "temperature": 0.3,
                    "messages": [{"role": "system", "content": REPORT_PROMPT.format(
-                       kind=kind, data=json.dumps(data, ensure_ascii=False))}]}
+                       kind=kind, data=json.dumps(data, ensure_ascii=False))},
+                                {"role": "user", "content": "请生成报告"}]}
         r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
                           headers={"Authorization": f"Bearer {LLM_API_KEY}",
                                    "Content-Type": "application/json"},
