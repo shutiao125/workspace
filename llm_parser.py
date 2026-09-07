@@ -81,11 +81,10 @@ def _regex_parse(text: str) -> dict:
 REPORT_PROMPT = """你是记账助手。以下是用户{month}月的收支统计(JSON):
 {data}
 
-请用中文简洁输出(60字以内)，只引用数据中的数字，不要新增数字，格式:
+请用中文简洁输出(60字以内)，只引用数据中的数字，不要新增数字，不要给任何建议，格式:
 本月支出：¥{expense}
 本月收入：¥{income}
-结余：¥{balance}
-一句话建议。(若上月有数据可跳过建议，直接一句即可)"""
+结余：¥{balance}"""
 
 
 def ai_report(kind: str, data: dict) -> str | None:

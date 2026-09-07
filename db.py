@@ -72,6 +72,36 @@ def month_by_category(openid: str, month: str) -> list:
     return [(r["category"], round(r["s"], 2)) for r in rows]
 
 
+def week_stats(openid: str, start: str, end: str) -> dict:
+    """自然周(周一~日)收支: start/end 为 YYYY-MM-DD"""
+    return _sums("tx_date>=? AND tx_date<=?", (start, end), openid)
+
+
+def week_by_category(openid: str, start: str, end: str) -> list:
+    """一周内各分类支出, 按金额降序"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT category, SUM(amount) AS s FROM records "
+            "WHERE openid=? AND type='支出' AND tx_date>=? AND tx_date<=? "
+            "GROUP BY category ORDER BY s DESC",
+            (openid, start, end)).fetchall()
+    return [(r["category"], round(r["s"], 2)) for r in rows]
+
+
+def week_daily(openid: str, start: str, end: str) -> list:
+    """一周内每天支出统计(旧→新): [(日期, 支出, 收入)]"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT tx_date, "
+            "SUM(CASE WHEN type='支出' THEN amount ELSE 0 END) AS e, "
+            "SUM(CASE WHEN type='收入' THEN amount ELSE 0 END) AS i "
+            "FROM records WHERE openid=? AND tx_date>=? AND tx_date<=? "
+            "GROUP BY tx_date ORDER BY tx_date",
+            (openid, start, end)).fetchall()
+    return [{"date": r["tx_date"], "支出": round(r["e"] or 0, 2),
+             "收入": round(r["i"] or 0, 2)} for r in rows]
+
+
 def recent_records(openid: str, limit: int = 5) -> list:
     """最近几笔记录(新→旧), 含id供删除用"""
     with _conn() as conn:

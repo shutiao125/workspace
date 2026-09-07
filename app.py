@@ -13,7 +13,7 @@ from config import (WECHAT_TOKEN, ALLOWED_OPENIDS, PUSH_TOKEN,
 import wechat
 import db
 from llm_parser import parse_record, ai_report
-from report import build_daily_report, push_daily
+from report import build_daily_report, push_daily, push_weekly
 
 app = Flask(__name__)
 db.init_db()
@@ -31,17 +31,19 @@ WELCOME = (
     "也可以直接发语音, 我会自动转文字记账。\n\n"
     "命令: 【今日】【本月】【最近】【分析】【帮助】"
 )
-HELP = ("📈 记账命令:\n"
-        "  今日 —— 查看今天收支\n"
-        "  本月 —— 查看本月收支与分类\n"
-        "  最近 —— 查看最近5笔记录\n"
-        "  查9月5日 —— 查看某天的账单(可带年份,如查2025年9月5日)\n"
-        "  补记9月5日午饭30块 —— 补账到指定日期(日期支持20250902写法)\n"
-        "  删除9月7日 餐饮 35 —— 删除匹配的账单\n"
-        "  直接发文字/语音 —— 记一笔账\n"
-        "  修改某笔: 先删除, 再重发一条正确的\n"
-        "  分析 —— 分析本月收支\n"
-        "  帮助 —— 查看帮助")
+HELP = ("📌 记一笔账:\n"
+        "  直接发文字或语音, 例如:\n"
+        "    「午饭35」「打车花20」「发工资12000」\n"
+        "    「昨天买书58」「补记2026年9月5日吃饭30」\n\n"
+        "🔎 查账:\n"
+        "  今日 / 本月 / 最近 / 分析\n"
+        "  查2026年9月5日 —— 看某天的账(不写年份则为今年)\n\n"
+        "🗑️ 删账:\n"
+        "  删除2026年9月7日 餐饮 35\n\n"
+        "✏️ 改账:\n"
+        "  修改2026年9月7日 餐饮 35 打车 40\n"
+        "  (把2026年9月7日的「餐饮35」改成「打车40」)\n\n"
+        "💬 帮助 —— 查看本说明")
 
 
 def _allowed(openid: str) -> bool:
@@ -75,19 +77,47 @@ def _compact_ymd(digits: str):
     return y, m, d
 
 
+def _strip_date(s: str):
+    """从字符串开头剥离日期, 返回(Y-M-D日期或None, 剩余文本)"""
+    s = s.strip()
+    m = re.match(r"^(?P<rel>今天|昨天)", s)
+    if m:
+        back = 1 if m.group("rel") == "昨天" else 0
+        day = (datetime.now() - timedelta(days=back)).strftime("%Y-%m-%d")
+        return day, s[m.end():].strip()
+    m = re.match(r"^(?:(?P<y>\d{4})年)?(?P<m>\d{1,2})月(?P<d>\d{1,2})[日号]", s)
+    if m:
+        year = int(m.group("y")) if m.group("y") else datetime.now().year
+        try:
+            day = f"{year}-{int(m.group('m')):02d}-{int(m.group('d')):02d}"
+            return day, s[m.end():].strip()
+        except ValueError:
+            pass
+    m = re.match(r"^(?P<y>\d{4})[年/\-]?(?P<m>\d{1,2})[月/\-]?(?P<d>\d{1,2})[日号]?", s)
+    if m:
+        try:
+            day = f"{int(m.group('y'))}-{int(m.group('m')):02d}-{int(m.group('d')):02d}"
+            return day, s[m.end():].strip()
+        except ValueError:
+            pass
+    return None, s
+
+
 def _cat_disp(r):
     """显示用分类: 大分类·细分类"""
     return r["category"] + (f"·{r.get('subcategory')}" if r.get("subcategory") else "")
 
 
-def handle_record(openid: str, text: str, source: str) -> str:
-    """同步解析并入库, 返回确认文本(作为被动回复, 未认证订阅号无客服消息接口)"""
+def handle_record(openid: str, text: str, source: str, day: str = "") -> str:
+    """同步解析并入库, 返回确认文本(作为被动回复, 未认证订阅号无客服消息接口)
+    day 非空时覆盖解析出的日期(供补记/修改指定日期使用)"""
     r = parse_record(text)
     sub = r.get("subcategory", "")
-    db.add_record(openid, r["date"], r["type"], r["category"],
+    tx_date = day or r["date"]
+    db.add_record(openid, tx_date, r["type"], r["category"],
                   r["amount"], r["note"], source, sub)
     icon = "💸" if r["type"] == "支出" else "💰"
-    return (f"{icon} 已记账 {r['date']}\n"
+    return (f"{icon} 已记账 {tx_date}\n"
             f"{_cat_disp(r)} ¥{r['amount']:.2f} | {r['note']}\n"
             f"发送【今日】查看汇总")
 
@@ -221,6 +251,64 @@ def wechat_callback():
                                         "❌ 日期无效, 示例: 补记9月5日午饭30块")
         reply = handle_record(openid, m_bu.group(4).strip(), source, day)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
+    # 修改命令(方案A: 定位旧记录后删除, 再记入新内容): 支持多种写法
+    #   修改9月7日 餐饮 35 打车 40 / 修改9月7日餐饮35打车40
+    #   修改9月7日 餐饮 35 → 打车 40 / 改成 / 换成 / 替换为
+    #   修改9月7日 餐饮 35 → 9月8日 打车 45 (含新日期)
+    #   修改昨天 打车 20 打车 30
+    m_mod = re.match(
+        r"^\s*(?:修改|更正|变更|改账)\s*"
+        r"(?:"
+        r"(?P<rel>今天|昨天)|"
+        r"(?:(?P<y>\d{4})年)?\s*(?P<m>\d{1,2})月(?P<d>\d{1,2})[日号]|"
+        r"(?P<y2>\d{4})[年/\-]?(?P<m2>\d{1,2})[月/\-]?(?P<d2>\d{1,2})[日号]?"
+        r")"
+        r"\s*[：:，,]?\s*"
+        r"(?P<ocat>\S+?)\s*[=：:，,]?\s*"
+        r"(?P<oamt>\d+(?:\.\d+)?)[块元¥￥票]?\s*"
+        r"(?P<rest>.+)$",
+        text)
+    if m_mod:
+        if m_mod.group("rel"):
+            back = 1 if m_mod.group("rel") == "昨天" else 0
+            old_day = (datetime.now() - timedelta(days=back)).strftime("%Y-%m-%d")
+        else:
+            try:
+                if m_mod.group("m"):
+                    year = int(m_mod.group("y")) if m_mod.group("y") else datetime.now().year
+                    month, day = int(m_mod.group("m")), int(m_mod.group("d"))
+                else:
+                    year = int(m_mod.group("y2"))
+                    month, day = int(m_mod.group("m2")), int(m_mod.group("d2"))
+                old_day = f"{year}-{month:02d}-{day:02d}"
+            except ValueError:
+                return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                            "❌ 日期无效, 示例: 修改9月7日 餐饮 35 打车 40")
+        old_cat = m_mod.group("ocat")
+        old_amt = round(float(m_mod.group("oamt")), 2)
+        # 拆分 old 之后的新内容: 去掉分隔符(改成/→等) 与可选新日期
+        rest = m_mod.group("rest").strip()
+        for sepch in ("→", "->", "=>", "改成", "改为", "换成", "替换为",
+                      "变更为", "成", "为", "换", "，", ",", "：", ":", "="):
+            if rest.startswith(sepch):
+                rest = rest[len(sepch):].strip()
+                break
+        new_day, src = _strip_date(rest)
+        new_day = new_day or old_day
+        # 定位并删除旧记录
+        rec, more = db.delete_record_by_match(openid, old_day, old_cat, old_amt)
+        if rec is None:
+            return wechat.to_text_reply(
+                msg.get("ToUserName", ""), openid,
+                f"❌ 没有找到匹配记录: {old_day} {old_cat} ¥{old_amt:.2f}\n"
+                f"可先发【查{old_cat}】/【最近】核对账目")
+        # 删除成功后记入新内容(day 覆盖新日期, handle_record 会据此记入)
+        new_reply = handle_record(openid, src, source, new_day)
+        reply = (f"🗑 已删除旧账 {rec['tx_date']} {rec['category']} "
+                 f"¥{rec['amount']:.2f} {rec['note']}\n{new_reply}")
+        if more:
+            reply += f"\n⚠️ 还有{more}条相同旧账, 未被删除"
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
     # 删除指定日期+分类+金额的账单 (较宽松): 删除9月7日 餐饮 35 / 删除9月7日餐饮35
     #   / 删除2026-09-07 餐饮 35 / 删除昨天 打车 20块 / 删除9月7日 餐饮:35
     m_del = re.match(
@@ -305,13 +393,32 @@ def push_daily_endpoint():
     return {"pushed": results}
 
 
+@app.route("/push/weekly", methods=["POST", "GET"])
+def push_weekly_endpoint():
+    """手动/外部定时触发周报推送: /push/weekly?token=xxx"""
+    if request.args.get("token") != PUSH_TOKEN:
+        return "forbidden", 403
+    with db._conn() as conn:
+        openids = [r["openid"] for r in
+                   conn.execute("SELECT DISTINCT openid FROM records")]
+    results = {}
+    for openid in openids or list(ALLOWED_OPENIDS):
+        try:
+            push_weekly(openid)
+            results[openid] = "ok"
+        except Exception as e:
+            results[openid] = str(e)
+    return {"pushed": results}
+
+
 def _start_scheduler():
     """内置定时推送(本机长期运行时启用: RUN_SCHEDULER=1)"""
     from apscheduler.schedulers.background import BackgroundScheduler
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
-    sched.add_job(push_daily_endpoint, "cron", hour=PUSH_HOUR, minute=PUSH_MINUTE)
+    sched.add_job(push_weekly_endpoint, "cron", day_of_week="sun",
+                  hour=PUSH_HOUR, minute=PUSH_MINUTE)
     sched.start()
-    print(f"[scheduler] 每日 {PUSH_HOUR:02d}:{PUSH_MINUTE:02d} 自动推送已启动")
+    print(f"[scheduler] 每周日 {PUSH_HOUR:02d}:{PUSH_MINUTE:02d} 周报推送已启动")
 
 
 if __name__ == "__main__":

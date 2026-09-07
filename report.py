@@ -30,6 +30,52 @@ def build_daily_report(openid: str) -> str:
     return "\n".join(lines)
 
 
+def _week_range(today: datetime.date = None):
+    """返回本周(周一~周日)的 (起 YYYY-MM-DD, 止 YYYY-MM-DD)"""
+    today = today or datetime.date.today()
+    start = today - datetime.timedelta(days=today.weekday())   # 周一=0
+    end = start + datetime.timedelta(days=6)
+    return start, end
+
+
+def build_weekly_report(openid: str) -> str:
+    start, end = _week_range()
+    s, e = start.isoformat(), end.isoformat()
+    w = db.week_stats(openid, s, e)
+    cats = db.week_by_category(openid, s, e)
+    daily = db.week_daily(openid, s, e)
+    top = "、".join(f"{c} ¥{v}" for c, v in cats[:3]) if cats else "暂无"
+    lines = [
+        f"📊 记账周报 {start} ~ {end}",
+        f"────────────",
+        f"本周支出: ¥{w['支出']:.2f}",
+        f"本周收入: ¥{w['收入']:.2f}",
+        f"本周结余: ¥{w['收入'] - w['支出']:.2f}",
+        f"支出Top3: {top}",
+    ]
+    if daily:
+        lines.append(f"────────────")
+        for d in daily:
+            lines.append(f"{d['date'][5:]} 支出¥{d['支出']:.2f}")
+    return "\n".join(lines)
+
+
+def push_weekly(openid: str):
+    """推送周报: 配置了模板ID用模板消息, 否则用群发文本"""
+    start, end = _week_range()
+    s, e = start.isoformat(), end.isoformat()
+    w = db.week_stats(openid, s, e)
+    text = build_weekly_report(openid)
+    if DAILY_TEMPLATE_ID:
+        send_template(openid, DAILY_TEMPLATE_ID, data={
+            "expense": {"value": f"本周支出 ¥{w['支出']:.2f}"},
+            "income":  {"value": f"本周收入 ¥{w['收入']:.2f}"},
+            "remark":  {"value": f"周报 {start}~{end} 结余 ¥{w['收入'] - w['支出']:.2f}"},
+        })
+    else:
+        send_custom_text(openid, text)
+
+
 def push_daily(openid: str):
     """推送到微信: 配置了模板ID用模板消息, 否则用群发文本(个人订阅号每天1次)"""
     today = datetime.date.today()
