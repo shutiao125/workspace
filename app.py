@@ -269,9 +269,10 @@ def wechat_callback():
         if not cats:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "📭 本月暂无支出记录, 记账后再来分析~")
+        bal = round(m["收入"] - m["支出"], 2)
+        bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
         data = {"月份": month, "expense": m["支出"], "income": m["收入"],
-                "balance": round(m["收入"] - m["支出"], 2),
-                "分类支出": {c: v for c, v in cats}}
+                "balance": bal_str, "分类支出": {c: v for c, v in cats}}
         analysis = ai_report("月度收支分析" + month, data)
         if not analysis:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
