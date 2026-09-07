@@ -78,14 +78,14 @@ def _regex_parse(text: str) -> dict:
             "subcategory": subcategory, "amount": amount, "note": text[:20]}
 
 
-REPORT_PROMPT = """你是理财分析助手。以下是用户{kind}的记账数据(JSON):
+REPORT_PROMPT = """你是记账助手。以下是用户{month}月的收支统计(JSON):
 {data}
 
-请基于数据生成简明报告:
-1. 收支概况(只引用给定数字, 严禁编造或心算出新数字)
-2. 主要支出去向
-3. 一条简短建议
-用中文, 150字以内, 只输出报告内容。"""
+请用中文简洁输出(60字以内)，只引用数据中的数字，不要新增数字，格式:
+本月支出：¥{expense}
+本月收入：¥{income}
+结余：¥{balance}
+一句话建议。(若上月有数据可跳过建议，直接一句即可)"""
 
 
 def ai_report(kind: str, data: dict) -> str | None:
@@ -93,9 +93,10 @@ def ai_report(kind: str, data: dict) -> str | None:
     if not LLM_API_KEY:
         return None
     try:
+        fmt = dict(data) | {"month": kind.split("(")[0].replace("月度收支分析", ""), "data": json.dumps(data, ensure_ascii=False)}
         payload = {"model": LLM_MODEL, "temperature": 0.3,
                    "messages": [{"role": "system", "content": REPORT_PROMPT.format(
-                       kind=kind, data=json.dumps(data, ensure_ascii=False))},
+                       **fmt)},
                                 {"role": "user", "content": "请生成报告"}]}
         r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
                           headers={"Authorization": f"Bearer {LLM_API_KEY}",
