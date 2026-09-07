@@ -4,7 +4,7 @@
 """
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, request
 
@@ -221,23 +221,36 @@ def wechat_callback():
                                         "❌ 日期无效, 示例: 补记9月5日午饭30块")
         reply = handle_record(openid, m_bu.group(4).strip(), source, day)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-    # 删除指定日期+分类+金额的账单: 删除9月7日 餐饮 35 / 删除2026-09-07 餐饮 35
+    # 删除指定日期+分类+金额的账单 (较宽松): 删除9月7日 餐饮 35 / 删除9月7日餐饮35
+    #   / 删除2026-09-07 餐饮 35 / 删除昨天 打车 20块 / 删除9月7日 餐饮:35
     m_del = re.match(
-        r"^删除\s*(?:(\d{4})年)?\s*(?:(\d{1,2})月(\d{1,2})[日号]|(\d{4})-(\d{1,2})-(\d{1,2}))"
-        r"\s+(\S+)\s+(\d+(?:\.\d+)?)(?:\s*[块元])?$", text)
+        r"^\s*删除\s*(?:"
+        r"(?P<rel>今天|昨天)|"                         # 删除今天/昨天 …
+        r"(?:(?P<y>\d{4})年)?\s*(?P<m>\d{1,2})月(?P<d>\d{1,2})[日号]|"  # 删除[YYYY年]M月D日 …
+        r"(?P<y2>\d{4})[年/\-]?(?P<m2>\d{1,2})[月/\-]?(?P<d2>\d{1,2})[日号]?"  # 删除2026-09-07 / 2026/9/7 / 20260907
+        r")"
+        r"\s*[：:，,]?\s*"
+        r"(?P<cat>\S+?)\s*[=：:，,\-]?\s*"
+        r"(?P<amt>\d+(?:\.\d+)?)\s*[块元¥￥票]?\s*$",
+        text)
     if m_del:
-        year = int(m_del.group(1)) if m_del.group(1) else datetime.now().year
-        if m_del.group(2):
-            month, day = int(m_del.group(2)), int(m_del.group(3))
+        if m_del.group("rel"):                       # 今天/昨天
+            back = 1 if m_del.group("rel") == "昨天" else 0
+            day_s = (datetime.now() - timedelta(days=back)).strftime("%Y-%m-%d")
         else:
-            month, day = int(m_del.group(4)), int(m_del.group(5))
-        try:
-            day_s = f"{year}-{month:02d}-{day:02d}"
-        except ValueError:
-            return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                        "❌ 日期无效, 示例: 删除9月7日 餐饮 35")
-        category = m_del.group(7)
-        amount = round(float(m_del.group(8)), 2)
+            try:
+                if m_del.group("m"):                 # M月D日 / YYYY年M月D日
+                    year = int(m_del.group("y")) if m_del.group("y") else datetime.now().year
+                    month, day = int(m_del.group("m")), int(m_del.group("d"))
+                else:                                # YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
+                    year = int(m_del.group("y2"))
+                    month, day = int(m_del.group("m2")), int(m_del.group("d2"))
+                day_s = f"{year}-{month:02d}-{day:02d}"
+            except ValueError:
+                return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                            "❌ 日期无效, 示例: 删除9月7日 餐饮 35")
+        category = m_del.group("cat")
+        amount = round(float(m_del.group("amt")), 2)
         rec, more = db.delete_record_by_match(openid, day_s, category, amount)
         if rec is None:
             return wechat.to_text_reply(
