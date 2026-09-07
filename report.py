@@ -3,7 +3,8 @@
 import datetime
 
 import db
-from config import DAILY_TEMPLATE_ID
+from config import DAILY_TEMPLATE_ID, LLM_API_KEY
+from llm_parser import ai_report
 from wechat import send_custom_text, send_template, send_mass_text
 
 
@@ -37,10 +38,14 @@ def push_daily(openid: str):
     cats = db.month_by_category(openid, month:=today.strftime("%Y-%m"))
     text = build_daily_report(openid)
 
-    # AI增强: 配置了LLM Key则生成解读版日报, 失败自动退化纯文本
+    # AI增强: 配置了LLM Key则生成简洁解读版日报, 失败自动退化纯文本
     if LLM_API_KEY:
-        data = {"今日": t, "本月": m, "分类支出": dict(cats)}
-        ai_text = ai_report("今日收支日报", data)
+        bal = round(m["收入"] - m["支出"], 2)
+        bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
+        data = {"月份": today.strftime("%Y-%m"), "expense": m["支出"],
+                "income": m["收入"], "balance": bal_str,
+                "分类支出": dict(cats)}
+        ai_text = ai_report("今日收支日报" + today.strftime("%Y-%m"), data)
         if ai_text:
             text = f"📊 AI记账日报 {today}\n{ai_text}"
 
