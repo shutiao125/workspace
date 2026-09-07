@@ -22,7 +22,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "glm-4-flash")                     # flash模
 
 # ---------- 其他 ----------
 DB_PATH = os.getenv("LEDGER_DB", "ledger.db")                         # SQLite文件路径
-PUSH_TOKEN = os.getenv("PUSH_TOKEN", "change_me")                     # 手动触发每日推送的口令
+PUSH_TOKEN = os.getenv("PUSH_TOKEN", "ggglll")                        # 手动触发每日推送的口令
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "1") == "1"                # 内置定时推送开关(本机运行用)
 PUSH_HOUR = int(os.getenv("PUSH_HOUR", "21"))                         # 每日推送时间: 点
 PUSH_MINUTE = int(os.getenv("PUSH_MINUTE", "30"))                     # 每日推送时间: 分
