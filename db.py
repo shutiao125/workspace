@@ -102,6 +102,36 @@ def week_daily(openid: str, start: str, end: str) -> list:
              "收入": round(r["i"] or 0, 2)} for r in rows]
 
 
+def year_stats(openid: str, year: str) -> dict:
+    """整年收支统计: year 为 'YYYY'"""
+    return _sums("substr(tx_date,1,4)=?", (year,), openid)
+
+
+def year_by_category(openid: str, year: str) -> list:
+    """整年各分类支出, 按金额降序"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT category, SUM(amount) AS s FROM records "
+            "WHERE openid=? AND type='支出' AND substr(tx_date,1,4)=? "
+            "GROUP BY category ORDER BY s DESC",
+            (openid, year)).fetchall()
+    return [(r["category"], round(r["s"], 2)) for r in rows]
+
+
+def year_monthly(openid: str, year: str) -> list:
+    """整年逐月支出统计(1~12月): [(YYYY-MM, 支出, 收入)]"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT substr(tx_date,1,7) AS m, "
+            "SUM(CASE WHEN type='支出' THEN amount ELSE 0 END) AS e, "
+            "SUM(CASE WHEN type='收入' THEN amount ELSE 0 END) AS i "
+            "FROM records WHERE openid=? AND substr(tx_date,1,4)=? "
+            "GROUP BY m ORDER BY m",
+            (openid, year)).fetchall()
+    return [{"month": r["m"], "支出": round(r["e"] or 0, 2),
+             "收入": round(r["i"] or 0, 2)} for r in rows]
+
+
 def recent_records(openid: str, limit: int = 5) -> list:
     """最近几笔记录(新→旧), 含id供删除用"""
     with _conn() as conn:
@@ -111,15 +141,20 @@ def recent_records(openid: str, limit: int = 5) -> list:
     return [dict(r) for r in rows]
 
 
-def delete_record_by_match(openid: str, tx_date: str, kind: str, amount: float):
-    """按日期+分类(或细分类)+金额删除一条账目; 多个匹配时删除最早的一笔
-    返回(被删记录dict, 剩余相同记录数); 无匹配返回(None, 0)"""
+def delete_record_by_match(openid: str, tx_date: str, kind: str, amount: float,
+                           note: str = None):
+    """按日期+分类(或细分类)+金额删除一条账目; note 非空时再按备注精确匹配
+    多个匹配时删除最早的一笔; 返回(被删记录dict, 剩余相同记录数); 无匹配返回(None, 0)"""
     with _lock, _conn() as conn:
+        where = ("openid=? AND tx_date=? AND "
+                 "(category=? OR subcategory=?) AND ABS(amount-?)<0.005")
+        args = [openid, tx_date, kind, kind, amount]
+        if note:
+            where += " AND note=?"
+            args.append(note)
         rows = conn.execute(
-            "SELECT id, tx_date, type, category, subcategory, amount, note FROM records "
-            "WHERE openid=? AND tx_date=? AND (category=? OR subcategory=?) "
-            "AND ABS(amount-?)<0.005 "
-            "ORDER BY id", (openid, tx_date, kind, kind, amount)).fetchall()
+            f"SELECT id, tx_date, type, category, subcategory, amount, note "
+            f"FROM records WHERE {where} ORDER BY id", args).fetchall()
         if not rows:
             return None, 0
         row = rows[0]

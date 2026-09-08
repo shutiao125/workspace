@@ -4,7 +4,7 @@ import datetime
 
 import db
 from config import DAILY_TEMPLATE_ID, LLM_API_KEY
-from llm_parser import ai_report
+from llm_parser import ai_report, annual_report
 from wechat import send_custom_text, send_template, send_mass_text
 
 
@@ -58,6 +58,58 @@ def build_weekly_report(openid: str) -> str:
         for d in daily:
             lines.append(f"{d['date'][5:]} 支出¥{d['支出']:.2f}")
     return "\n".join(lines)
+
+
+def _year_range(year: int):
+    start = datetime.date(year, 1, 1)
+    end = datetime.date(year, 12, 31)
+    return start, end
+
+
+def build_annual_report(openid: str, year: int) -> str:
+    """生成年度报告纯文本(供无AI时的兜底用)"""
+    y = str(year)
+    s = db.year_stats(openid, y)
+    cats = db.year_by_category(openid, y)
+    months = db.year_monthly(openid, y)
+    top = "、".join(f"{c} ¥{v}" for c, v in cats[:3]) if cats else "暂无"
+    top_month = ""
+    if months:
+        top_month = max(months, key=lambda m: m["支出"])["month"][5:]
+    return ("\n".join([
+        f"📊 记账年报 {year}",
+        f"────────────",
+        f"全年支出: ¥{s['支出']:.2f}",
+        f"全年收入: ¥{s['收入']:.2f}",
+        f"全年结余: ¥{s['收入'] - s['支出']:.2f}",
+        f"支出Top3: {top}",
+        f"支出最多月: {top_month}月",
+    ]), s, cats, months, top, top_month)
+
+
+def push_annual(openid: str, year: int = None):
+    """推送年度报告: 默认今年, 配置了LLM则生成AI年度总结, 否则纯文本"""
+    year = year or datetime.date.today().year
+    text, s, cats, months, top, top_month = build_annual_report(openid, year)
+    # AI增强: 有任意收支记录才调大模型
+    if LLM_API_KEY and (s["支出"] or s["收入"]):
+        bal = round(s["收入"] - s["支出"], 2)
+        bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
+        data = {"year": year, "expense": s["支出"], "income": s["收入"],
+                "balance": bal_str, "top": top or "暂无", "top_month": top_month or "无",
+                "分类支出": dict(cats),
+                "逐月支出": {m["month"][5:] + "月": m["支出"] for m in months}}
+        ai_text = annual_report(str(year), data)
+        if ai_text:
+            text = f"🤖 AI年度报告 {year}\n{ai_text}"
+    if DAILY_TEMPLATE_ID:
+        send_template(openid, DAILY_TEMPLATE_ID, data={
+            "expense": {"value": f"{year}年支出 ¥{s['支出']:.2f}"},
+            "income":  {"value": f"{year}年收入 ¥{s['收入']:.2f}"},
+            "remark":  {"value": f"结余 ¥{s['收入'] - s['支出']:.2f} · 最大支出{top_month}月"},
+        })
+    else:
+        send_custom_text(openid, text)
 
 
 def push_weekly(openid: str):

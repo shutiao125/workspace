@@ -12,8 +12,9 @@ from config import (WECHAT_TOKEN, ALLOWED_OPENIDS, PUSH_TOKEN,
                     RUN_SCHEDULER, PUSH_HOUR, PUSH_MINUTE)
 import wechat
 import db
-from llm_parser import parse_record, ai_report
-from report import build_daily_report, push_daily, push_weekly
+from llm_parser import (parse_record, ai_report, parse_batch,
+                        classify, tokenize_amounts)
+from report import build_daily_report, push_daily, push_weekly, push_annual
 
 app = Flask(__name__)
 db.init_db()
@@ -34,12 +35,14 @@ WELCOME = (
 HELP = ("📌 记一笔账:\n"
         "  直接发文字或语音, 例如:\n"
         "    「午饭35」「打车花20」「发工资12000」\n"
-        "    「昨天买书58」「补记2026年9月5日吃饭30」\n\n"
+        "    「昨天买书58」「补记2026年9月5日吃饭30」\n"
+        "    「奶茶6 洗澡2 喝水3」——一次记多笔, 自动分类\n\n"
         "🔎 查账:\n"
         "  今日 / 本月 / 最近 / 分析\n"
         "  查2026年9月5日 —— 看某天的账(不写年份则为今年)\n\n"
         "🗑️ 删账:\n"
-        "  删除2026年9月7日 餐饮 35\n\n"
+        "  删除2026年9月7日 餐饮 35\n"
+        "  删除2026年9月7日 奶茶6 洗澡2 —— 批量删\n\n"
         "✏️ 改账:\n"
         "  修改2026年9月7日 餐饮 35 打车 40\n"
         "  (把2026年9月7日的「餐饮35」改成「打车40」)\n\n"
@@ -309,8 +312,9 @@ def wechat_callback():
         if more:
             reply += f"\n⚠️ 还有{more}条相同旧账, 未被删除"
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-    # 删除指定日期+分类+金额的账单 (较宽松): 删除9月7日 餐饮 35 / 删除9月7日餐饮35
+    # 删除: 删除9月7日 餐饮 35 / 删除9月7日餐饮35
     #   / 删除2026-09-07 餐饮 35 / 删除昨天 打车 20块 / 删除9月7日 餐饮:35
+    #   / 批量: 删除9月7日 奶茶6 洗澡2 喝水3
     m_del = re.match(
         r"^\s*删除\s*(?:"
         r"(?P<rel>今天|昨天)|"                         # 删除今天/昨天 …
@@ -318,8 +322,7 @@ def wechat_callback():
         r"(?P<y2>\d{4})[年/\-]?(?P<m2>\d{1,2})[月/\-]?(?P<d2>\d{1,2})[日号]?"  # 删除2026-09-07 / 2026/9/7 / 20260907
         r")"
         r"\s*[：:，,]?\s*"
-        r"(?P<cat>\S+?)\s*[=：:，,\-]?\s*"
-        r"(?P<amt>\d+(?:\.\d+)?)\s*[块元¥￥票]?\s*$",
+        r"(?P<body>.+)$",
         text)
     if m_del:
         if m_del.group("rel"):                       # 今天/昨天
@@ -337,18 +340,36 @@ def wechat_callback():
             except ValueError:
                 return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                             "❌ 日期无效, 示例: 删除9月7日 餐饮 35")
-        category = m_del.group("cat")
-        amount = round(float(m_del.group("amt")), 2)
-        rec, more = db.delete_record_by_match(openid, day_s, category, amount)
-        if rec is None:
+        items = tokenize_amounts(m_del.group("body"))
+        if not items:
             return wechat.to_text_reply(
                 msg.get("ToUserName", ""), openid,
-                f"❌ 没有找到匹配记录: {day_s} {category} ¥{amount:.2f}\n"
-                f"可先发【查9月7日】核对该天的账目")
-        reply = (f"🗑 已删除 {rec['tx_date']} {rec['category']} "
-                 f"¥{rec['amount']:.2f} {rec['note']}")
-        if more:
-            reply += f"\n⚠️ 还有{more}条相同记录, 再次发送本命令可继续删除"
+                "❌ 无法识别要删除的账目, 示例:\n"
+                "  删除9月7日 餐饮 35\n  删除9月7日 奶茶6 洗澡2 喝水3")
+        if len(items) == 1:                          # 单笔删除(分类+金额)
+            kind, amount = items[0]
+            rec, more = db.delete_record_by_match(openid, day_s, kind, amount)
+            if rec is None:
+                return wechat.to_text_reply(
+                    msg.get("ToUserName", ""), openid,
+                    f"❌ 没有找到匹配记录: {day_s} {kind} ¥{amount:.2f}\n"
+                    f"可先发【查9月7日】核对该天的账目")
+            reply = f"🗑 已删除 {rec['tx_date']} {rec['category']} ¥{rec['amount']:.2f} {rec['note']}"
+            if more:
+                reply += f"\n⚠️ 还有{more}条相同记录, 再次发送本命令可继续删除"
+            return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
+        # 批量删除: 每个"名称 金额"项自动配分类精确定位
+        deleted_lines, missing = [], []
+        for note, amount in items:
+            cat = classify(note)
+            rec, _ = db.delete_record_by_match(openid, day_s, cat, amount, note)
+            if rec is not None:
+                deleted_lines.append(f"  {note} ¥{amount:.2f}")
+            else:
+                missing.append(f"  {note} ¥{amount:.2f}")
+        reply = f"🗑 已删除 {day_s} {len(deleted_lines)}笔:\n" + "\n".join(deleted_lines)
+        if missing:
+            reply += "\n❌ 未找到:\n" + "\n".join(missing)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
     if text in ("分析", "月度分析"):
         month = datetime.now().strftime("%Y-%m")
@@ -369,6 +390,20 @@ def wechat_callback():
                                     f"🤖 AI月度分析 {month}\n{analysis}")
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
+
+    # 批量记账: "奶茶6 洗澡2 喝水3" -> 一次记入多笔, 名称自动分类入库
+    batch = parse_batch(text)
+    if batch:
+        tx_date = datetime.now().strftime("%Y-%m-%d")
+        lines, total = [], 0.0
+        for note, amt, cat in batch:
+            db.add_record(openid, tx_date, "支出", cat, amt, note, source, note)
+            total += amt
+            lines.append(f"  {cat}·{note} ¥{amt:.2f}")
+        return wechat.to_text_reply(
+            msg.get("ToUserName", ""), openid,
+            f"💸 已批量记账 {len(batch)}笔, 共 ¥{total:.2f}:\n"
+            + "\n".join(lines))
 
     # 记账: 同步解析, 结果作为被动回复(未认证订阅号无客服消息接口)
     reply = handle_record(openid, text, source)
@@ -411,14 +446,42 @@ def push_weekly_endpoint():
     return {"pushed": results}
 
 
+@app.route("/push/annual", methods=["POST", "GET"])
+def push_annual_endpoint():
+    """手动/外部定时触发年度报告推送: /push/annual?token=xxx&year=2026"""
+    if request.args.get("token") != PUSH_TOKEN:
+        return "forbidden", 403
+    year = None
+    if request.args.get("year"):
+        try:
+            year = int(request.args.get("year"))
+        except ValueError:
+            return "bad year", 400
+    with db._conn() as conn:
+        openids = [r["openid"] for r in
+                   conn.execute("SELECT DISTINCT openid FROM records")]
+    results = {}
+    for openid in openids or list(ALLOWED_OPENIDS):
+        try:
+            push_annual(openid, year)
+            results[openid] = "ok"
+        except Exception as e:
+            results[openid] = str(e)
+    return {"pushed": results}
+
+
 def _start_scheduler():
     """内置定时推送(本机长期运行时启用: RUN_SCHEDULER=1)"""
     from apscheduler.schedulers.background import BackgroundScheduler
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     sched.add_job(push_weekly_endpoint, "cron", day_of_week="sun",
                   hour=PUSH_HOUR, minute=PUSH_MINUTE)
+    # 年度报告: 每年12月31日 21:00
+    sched.add_job(push_annual_endpoint, "cron", month=12, day=31,
+                  hour=PUSH_HOUR, minute=PUSH_MINUTE)
     sched.start()
-    print(f"[scheduler] 每周日 {PUSH_HOUR:02d}:{PUSH_MINUTE:02d} 周报推送已启动")
+    print(f"[scheduler] 每周日 {PUSH_HOUR:02d}:{PUSH_MINUTE:02d} 周报 / "
+          f"每年12月31日 {PUSH_HOUR:02d}:{PUSH_MINUTE:02d} 年报 已启动")
 
 
 if __name__ == "__main__":

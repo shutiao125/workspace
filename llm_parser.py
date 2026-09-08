@@ -86,6 +86,16 @@ REPORT_PROMPT = """你是记账助手。以下是用户{month}月的收支统计
 本月收入：¥{income}
 结余：¥{balance}"""
 
+ANNUAL_PROMPT = """你是记账助手。以下是用户{year}年度账单统计(JSON):
+{data}
+
+请用中文生成一份年度总结(120字以内)，只引用数据中的数字，不要新增数字，不要给建议，格式:
+{year}年总支出：¥{expense}
+{year}年总收入：¥{income}
+{year}年结余：¥{balance}
+支出最多的分类：{top}
+支出最多的月份：{top_month}"""
+
 
 def ai_report(kind: str, data: dict) -> str | None:
     """把数据库统计好的数据交给大模型生成解读报告; 失败/未配Key返回None"""
@@ -111,6 +121,30 @@ def ai_report(kind: str, data: dict) -> str | None:
         return None
 
 
+def annual_report(year: str, data: dict) -> str | None:
+    """用大模型生成年度账单总结; 失败/未配Key返回None(调用方退化纯文本)"""
+    if not LLM_API_KEY:
+        return None
+    try:
+        fmt = dict(data) | {"data": json.dumps(data, ensure_ascii=False)}
+        payload = {"model": LLM_MODEL, "temperature": 0.3,
+                   "messages": [{"role": "system", "content": ANNUAL_PROMPT.format(
+                       **fmt)},
+                                {"role": "user", "content": "请生成年度总结"}]}
+        r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
+                          headers={"Authorization": f"Bearer {LLM_API_KEY}",
+                                   "Content-Type": "application/json"},
+                          data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                          timeout=20)
+        if r.status_code != 200:
+            print(f"[annual_report] HTTP {r.status_code}: {r.text[:300]}")
+            return None
+        return r.json()["choices"][0]["message"]["content"].strip() or None
+    except Exception as e:
+        print(f"[annual_report] 生成失败: {e}")
+        return None
+
+
 def parse_record(text: str) -> dict:
     """入口: 优先LLM解析, 失败/未配置则正则兜底"""
     if LLM_API_KEY:
@@ -119,3 +153,38 @@ def parse_record(text: str) -> dict:
         except Exception as e:
             print(f"[llm_parser] LLM解析失败, 使用正则兜底: {e}")
     return _regex_parse(text)
+
+
+def classify(note: str) -> str:
+    """按关键词给一个消费项分类"""
+    for pattern, cat in KEYWORD_CATEGORY:
+        if re.search(pattern, note):
+            return cat
+    return "其他"
+
+
+def tokenize_amounts(body: str):
+    """把"名称 金额"连续片段拆成 [(名称, 金额)]
+    "奶茶6 洗澡2 喝水3" -> [('奶茶',6.0),('洗澡',2.0),('喝水',3.0)]
+    "餐饮 35" -> [('餐饮',35.0)]; 中间夹了无关文字则返回 None"""
+    tok = re.compile(
+        r"([\u4e00-\u9fa5a-zA-Z]+)\s*[：:，,=\-、】~]?\s*(\d+(?:\.\d+)?)\s*[块元毛¥￥票]?")
+    items, pos = [], 0
+    for m in tok.finditer(body):
+        gap = body[pos:m.start()]
+        if re.search(r"[A-Za-z0-9\u4e00-\u9fa5]", gap):   # 两项之间有无关文字(如"花了")
+            return None
+        items.append((m.group(1).strip(), round(float(m.group(2)), 2)))
+        pos = m.end()
+    if re.search(r"[A-Za-z0-9\u4e00-\u9fa5]", body[pos:]):  # 结尾还有多余文字
+        return None
+    return items or None
+
+
+def parse_batch(text: str):
+    """连续多笔"名称+金额"记账, 自动分类: "奶茶6 洗澡2 喝水3"
+    返回 [(名称, 金额, 分类)]; 不是≥2笔的连续批量时返回 None(走单笔逻辑)"""
+    items = tokenize_amounts(text)
+    if not items or len(items) < 2:
+        return None
+    return [(n, a, classify(n)) for n, a in items]
