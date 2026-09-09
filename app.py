@@ -13,7 +13,7 @@ from config import (WECHAT_TOKEN, ALLOWED_OPENIDS, PUSH_TOKEN,
 import wechat
 import db
 from llm_parser import (parse_record, ai_report, parse_batch,
-                        classify, tokenize_amounts, annual_report)
+                        classify, tokenize_amounts, annual_report, ai_summary)
 from report import (build_daily_report, build_weekly_report,
                     build_annual_report, push_daily, push_weekly, push_annual)
 
@@ -413,16 +413,25 @@ def wechat_callback():
         if not cats:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "📭 本月暂无支出记录, 记账后再来分析~")
+        # 上月数据(供环比, 可能为空)
+        y, mo = month.split("-")
+        if mo == "01":
+            prev = f"{int(y)-1}-12"
+        else:
+            prev = f"{int(y)}-{int(mo)-1:02d}"
+        pm = db.month_stats(openid, prev)
         bal = round(m["收入"] - m["支出"], 2)
         bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
         data = {"月份": month, "expense": m["支出"], "income": m["收入"],
-                "balance": bal_str, "分类支出": {c: v for c, v in cats}}
-        analysis = ai_report("月度收支分析" + month, data)
-        if not analysis:
+                "balance": bal_str,
+                "上月支出": pm["支出"], "上月收入": pm["收入"],
+                "分类支出": {c: v for c, v in cats}}
+        summary = ai_summary(month, data)
+        if not summary:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "🤖 AI分析暂不可用(未配置LLM Key或服务不可达)")
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                    f"🤖 AI分析总结 {month}\n{analysis}")
+                                    f"🤖 AI分析总结 {month}\n{summary}")
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
 
