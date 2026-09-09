@@ -146,6 +146,7 @@ def wechat_callback():
 
     openid = msg.get("FromUserName", "")
     msg_type = msg.get("MsgType", "")
+    print(f"[msg] openid={openid!r} MsgType={msg_type!r} Content={msg.get('Content','')!r}")
     if not _allowed(openid):
         return "success"
 
