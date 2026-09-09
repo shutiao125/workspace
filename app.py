@@ -9,12 +9,13 @@ from datetime import datetime, timedelta
 from flask import Flask, request
 
 from config import (WECHAT_TOKEN, ALLOWED_OPENIDS, PUSH_TOKEN,
-                    RUN_SCHEDULER, PUSH_HOUR, PUSH_MINUTE)
+                    RUN_SCHEDULER, PUSH_HOUR, PUSH_MINUTE, LLM_API_KEY)
 import wechat
 import db
 from llm_parser import (parse_record, ai_report, parse_batch,
-                        classify, tokenize_amounts)
-from report import build_daily_report, push_daily, push_weekly, push_annual
+                        classify, tokenize_amounts, annual_report)
+from report import (build_daily_report, build_weekly_report,
+                    build_annual_report, push_daily, push_weekly, push_annual)
 
 app = Flask(__name__)
 db.init_db()
@@ -39,6 +40,7 @@ HELP = ("📌 记一笔账:\n"
         "    「奶茶6 洗澡2 喝水3」——一次记多笔, 自动分类\n\n"
         "🔎 查账:\n"
         "  今日 / 本月 / 最近 / 分析\n"
+        "  周报(仅周日) / 年报(仅12月31日)\n"
         "  查2026年9月5日 —— 看某天的账(不写年份则为今年)\n\n"
         "🗑️ 删账:\n"
         "  删除2026年9月7日 餐饮 35\n"
@@ -222,6 +224,31 @@ def wechat_callback():
         return wechat.to_text_reply(
             msg.get("ToUserName", ""), openid,
             "📋 最近5笔:\n" + "\n".join(lines))
+    # 周报: 仅每周日可查询
+    if text in ("周报", "本周"):
+        if datetime.now().weekday() != 6:     # weekday(): 周一=0 ... 周日=6
+            return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                        "🕐 周报仅每周日可查询, 到时再发「周报」~")
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                    build_weekly_report(openid))
+    # 年报: 仅每年12月31日可查询(查询当年)
+    if text in ("年报", "年报到"):
+        if datetime.now().month != 12 or datetime.now().day != 31:
+            return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                        "🕐 年报仅每年12月31日可查询, 到时再发「年报」~")
+        year = datetime.now().year
+        text_r, s, cats, months, top, top_month = build_annual_report(openid, year)
+        if LLM_API_KEY and (s["支出"] or s["收入"]):
+            bal = round(s["收入"] - s["支出"], 2)
+            bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
+            data = {"year": year, "expense": s["支出"], "income": s["收入"],
+                    "balance": bal_str, "top": top or "暂无", "top_month": top_month or "无",
+                    "分类支出": dict(cats),
+                    "逐月支出": {m["month"][5:] + "月": m["支出"] for m in months}}
+            ai_text = annual_report(str(year), data)
+            if ai_text:
+                text_r = f"🤖 AI年度报告 {year}\n{ai_text}"
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid, text_r)
     # 查某天的账: 查9月5日(默认今年) / 查2025年9月5日
     m_q = re.match(r"^查\s*(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})[日号]$", text)
     if m_q:
