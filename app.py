@@ -39,8 +39,8 @@ HELP = ("📌 记一笔账:\n"
         "    「昨天买书58」「补记2026年9月5日吃饭30」\n"
         "    「奶茶6 洗澡2 喝水3」——一次记多笔, 自动分类\n\n"
         "🔎 查账:\n"
-        "  今日 / 本月 / 最近 / 分析\n"
-        "  周报(仅周日) / 年报(仅12月31日)\n"
+        "  今日 / 本月 / 最近\n"
+        "  分析总结(AI解读本月) / 周报(仅周日) / 年报(仅12月31日)\n"
         "  查2026年9月5日 —— 看某天的账(不写年份则为今年)\n\n"
         "🗑️ 删账:\n"
         "  删除2026年9月7日 餐饮 35\n"
@@ -399,7 +399,7 @@ def wechat_callback():
         if missing:
             reply += "\n❌ 未找到:\n" + "\n".join(missing)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-    if text in ("分析", "月度分析"):
+    if text in ("分析总结", "分析"):
         month = datetime.now().strftime("%Y-%m")
         m = db.month_stats(openid, month)
         cats = db.month_by_category(openid, month)
@@ -415,7 +415,7 @@ def wechat_callback():
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "🤖 AI分析暂不可用(未配置LLM Key或服务不可达)")
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                    f"🤖 AI月度分析 {month}\n{analysis}")
+                                    f"🤖 AI分析总结 {month}\n{analysis}")
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
 
