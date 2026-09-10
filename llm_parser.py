@@ -7,7 +7,7 @@ import datetime
 
 import requests
 
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL
+from config import LLM_API_KEY, CF_ACCOUNT_ID, CF_API_TOKEN, CF_MODEL
 
 CATEGORIES = "餐饮/交通/购物/娱乐/居住/医疗/教育/人情/工资/理财/其他"
 
@@ -35,20 +35,43 @@ KEYWORD_CATEGORY = [
 ]
 
 
+def _cf_chat(system: str, user: str, timeout: float = 4.0,
+             max_tokens: int = 600, temperature: float = 0.7) -> str | None:
+    """Cloudflare Workers AI 文本生成(免费10k neurons/天); 失败/未配凭据返回None"""
+    if not (CF_API_TOKEN and CF_ACCOUNT_ID):
+        print("[cf] 未配置 CF_ACCOUNT_ID / CF_API_TOKEN")
+        return None
+    url = (f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
+           f"/ai/run/{CF_MODEL}")
+    body = {"messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "max_tokens": max_tokens, "temperature": temperature}
+    try:
+        r = requests.post(url,
+                          headers={"Authorization": f"Bearer {CF_API_TOKEN}",
+                                   "Content-Type": "application/json"},
+                          data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                          timeout=timeout)
+        if r.status_code != 200:
+            print(f"[cf] HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        j = r.json().get("result", {})
+        txt = j.get("response")
+        if not txt and isinstance(j.get("choices"), list) and j["choices"]:
+            txt = j["choices"][0].get("message", {}).get("content")
+        return (txt or "").strip() or None
+    except Exception as e:
+        print(f"[cf] 生成失败: {e}")
+        return None
+
+
 def _llm_parse(text: str) -> dict | None:
     today = datetime.date.today()
     ctx = {"today": str(today), "yesterday": str(today - datetime.timedelta(days=1)),
            "cats": CATEGORIES}
-    r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-                      headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-                      json={"model": LLM_MODEL, "temperature": 0,
-                            "messages": [
-                                {"role": "system", "content": PROMPT.format(**ctx)},
-                                {"role": "user", "content": text},
-                            ]},
-                      timeout=3)   # 微信被动回复限时5秒, LLM超时自动退化正则
-    r.raise_for_status()
-    content = r.json()["choices"][0]["message"]["content"].strip()
+    content = _cf_chat(PROMPT.format(**ctx), text, timeout=3.0, max_tokens=300, temperature=0)
+    if not content:
+        raise RuntimeError("CF无返回")
     # 提取JSON(模型偶尔会带```json包裹)
     m = re.search(r"\{.*\}", content, re.S)
     data = json.loads(m.group())
@@ -108,72 +131,26 @@ def ai_summary(period: str, data: dict, timeout: float = 4.0) -> str | None:
     timeout 默认 4s: 微信被动回复限时5秒, 必须在此内返回或降级, 否则会触发 write error"""
     if not LLM_API_KEY:
         return None
-    try:
-        fmt = dict(data) | {"period": period, "data": json.dumps(data, ensure_ascii=False)}
-        payload = {"model": LLM_MODEL, "temperature": 0.7,
-                   "messages": [{"role": "system", "content": SUMMARY_PROMPT.format(
-                       **fmt)},
-                                {"role": "user", "content": "请写总结"}]}
-        r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-                          headers={"Authorization": f"Bearer {LLM_API_KEY}",
-                                   "Content-Type": "application/json"},
-                          data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                          timeout=timeout)
-        if r.status_code != 200:
-            print(f"[ai_summary] HTTP {r.status_code}: {r.text[:300]}")
-            return None
-        return r.json()["choices"][0]["message"]["content"].strip() or None
-    except Exception as e:
-        print(f"[ai_summary] 生成失败: {e}")
-        return None
+    fmt = dict(data) | {"period": period, "data": json.dumps(data, ensure_ascii=False)}
+    return _cf_chat(SUMMARY_PROMPT.format(**fmt), "请写总结", timeout=timeout, max_tokens=600)
 
 
 def ai_report(kind: str, data: dict) -> str | None:
     """把数据库统计好的数据交给大模型生成解读报告; 失败/未配Key返回None"""
     if not LLM_API_KEY:
         return None
-    try:
-        fmt = dict(data) | {"month": kind.split("(")[0].replace("月度收支分析", ""), "data": json.dumps(data, ensure_ascii=False)}
-        payload = {"model": LLM_MODEL, "temperature": 0.3,
-                   "messages": [{"role": "system", "content": REPORT_PROMPT.format(
-                       **fmt)},
-                                {"role": "user", "content": "请生成报告"}]}
-        r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-                          headers={"Authorization": f"Bearer {LLM_API_KEY}",
-                                   "Content-Type": "application/json"},
-                          data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                          timeout=15)   # 日报由定时任务触发, 无5秒限制, 用长超时
-        if r.status_code != 200:
-            print(f"[ai_report] HTTP {r.status_code}: {r.text[:300]}")
-            return None
-        return r.json()["choices"][0]["message"]["content"].strip() or None
-    except Exception as e:
-        print(f"[ai_report] 生成失败: {e}")
-        return None
+    fmt = dict(data) | {"month": kind.split("(")[0].replace("月度收支分析", ""),
+                        "data": json.dumps(data, ensure_ascii=False)}
+    return _cf_chat(REPORT_PROMPT.format(**fmt), "请生成报告", timeout=15, max_tokens=500)
 
 
 def annual_report(year: str, data: dict) -> str | None:
     """用大模型生成年度账单总结; 失败/未配Key返回None(调用方退化纯文本)"""
     if not LLM_API_KEY:
         return None
-    try:
-        fmt = dict(data) | {"data": json.dumps(data, ensure_ascii=False)}
-        payload = {"model": LLM_MODEL, "temperature": 0.3,
-                   "messages": [{"role": "system", "content": ANNUAL_PROMPT.format(
-                       **fmt)},
-                                {"role": "user", "content": "请生成年度总结"}]}
-        r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-                          headers={"Authorization": f"Bearer {LLM_API_KEY}",
-                                   "Content-Type": "application/json"},
-                          data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                          timeout=20)
-        if r.status_code != 200:
-            print(f"[annual_report] HTTP {r.status_code}: {r.text[:300]}")
-            return None
-        return r.json()["choices"][0]["message"]["content"].strip() or None
-    except Exception as e:
-        print(f"[annual_report] 生成失败: {e}")
-        return None
+    fmt = dict(data) | {"data": json.dumps(data, ensure_ascii=False)}
+    return _cf_chat(ANNUAL_PROMPT.format(year=year, **fmt), "请生成年度总结",
+                    timeout=20, max_tokens=700)
 
 
 def parse_record(text: str) -> dict:

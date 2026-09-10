@@ -16,9 +16,14 @@ DAILY_TEMPLATE_ID = os.getenv("DAILY_TEMPLATE_ID", "ifAqL7SDeoE8NIxKr4I9WZqMXraw
 ALLOWED_OPENIDS = set(filter(None, os.getenv("ALLOWED_OPENIDS", "").split(",")))
 
 # ---------- 大模型配置 (任意OpenAI兼容接口: 智谱/DeepSeek/通义/Kimi/SiliconFlow等) ----------
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")  # 智谱
-LLM_API_KEY = os.getenv("LLM_API_KEY", "ac7679e620dc4ae88ec93ca915a180f8.MF3ZNUwR4eja7aMN")   # 有Key就填, 没有保持空串
-LLM_MODEL = os.getenv("LLM_MODEL", "glm-4-flash")                     # flash模型免费额度充足
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "cf-enable")   # AI功能总开关: 非空即启用; 推理实际走Cloudflare(见下)
+LLM_MODEL = os.getenv("LLM_MODEL", "glm-4-flash")
+
+# ---------- Cloudflare Workers AI (AI分析/日报/年报的真实推理后端, 免费10k neurons/天) ----------
+CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "ba4e567c939362ab8ef9be8dbd95d351")
+CF_API_TOKEN  = os.getenv("CF_API_TOKEN", "")  # 敏感凭据, 勿提交git, 请用环境变量设置(见README/部署)
+CF_MODEL      = os.getenv("CF_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast")
 
 # ---------- 其他 ----------
 DB_PATH = os.getenv("LEDGER_DB", "ledger.db")                         # SQLite文件路径
