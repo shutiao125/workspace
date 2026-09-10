@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """微信测试号回调服务入口: 消息回调 + 记账
 运行: python app.py  (开发时配合内网穿透暴露公网HTTPS)
 """
@@ -59,7 +58,8 @@ HELP = ("📌 记账详细命令:\n"
         "🗓️ 年报:\n"
         "   仅支持在每年12月31日查看年报\n"
         "🤖 分析总结:\n"
-        "   AI解读本月\n")
+        "   支持上周/本周/上月/本月/今年/去年\n"
+        "   命令例如:分析上周")
 
 
 def _allowed(openid: str) -> bool:
@@ -245,7 +245,7 @@ def wechat_callback():
     if msg.get("MsgId") and _is_duplicate(msg["MsgId"]):
         return "success"
 
-    # 提取文本: 文字消息 / 语音消息
+    # 提取文本: 文字消息
     text, source = "", "text"
     if msg_type == "text":
         text = msg.get("Content", "").strip()
@@ -313,7 +313,7 @@ def wechat_callback():
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                     build_weekly_report(openid))
     # 年报: 仅每年12月31日可查询(查询当年)
-    if text in ("年报", "年报到"):
+    if text in ("年报", "今年"):
         if datetime.now().month != 12 or datetime.now().day != 31:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "🕐 年报仅每年12月31日可查询, 到时再发「年报」~")
@@ -350,7 +350,7 @@ def wechat_callback():
             msg.get("ToUserName", ""), openid,
             f"📅 {day} 共{len(rows)}笔, 合计 ¥{total:.2f}:\n"
             + "\n".join(lines)
-            + f"\n删除某条: 删除{day} 分类 金额")
+            + f"\n(删除某条: 删除{day} 分类 金额)")
     # 补记某天的账: 补记9月5日午饭30块(默认今年) / 补记2025年12月24日买礼物88元
     m_bu = re.match(r"^补记\s*(?:(\d{4})年)?\s*(\d{1,2})月(\d{1,2})[日号]\s*(.+)$", text) or \
            re.match(r"^补记\s*(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s+(.+)$", text)
