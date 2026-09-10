@@ -4,6 +4,7 @@
 """
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from flask import Flask, request
@@ -23,6 +24,10 @@ db.init_db()
 # MsgId去重(微信5秒无响应会重试推送)
 _seen_msgs = set()
 _seen_lock = threading.Lock()
+
+# AI分析专用线程池: 用 result(timeout) 强制"总时长"硬超时(requests的read
+# timeout只看两次读间隔, 无法限制总时长, 曾导致被动回复超过微信5秒上限)
+_llm_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm")
 
 WELCOME = (
     "👋 欢迎使用记账助手!\n"
@@ -457,7 +462,13 @@ def wechat_callback():
         if not data["expense"] and not data["income"]:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         f"📭 {label} 暂无收支记录, 记账后再来分析~")
-        summary = ai_summary(plabel, data)
+        # 硬超时3.5s: 无论底层LLM请求挂多久, 主流程都会按时降级返回(微信5秒被动回复)
+        try:
+            fut = _llm_pool.submit(ai_summary, plabel, data)
+            summary = fut.result(timeout=3.5)
+        except Exception as e:
+            print(f"[analysis] LLM超时/失败, 降级纯文本: {e}")
+            summary = None
         if summary:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         f"🤖 AI分析总结 {label}\n{summary}")
