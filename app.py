@@ -175,11 +175,13 @@ def wechat_callback():
         source = "voice"
         text = msg.get("Recognition", "").strip()
         if not text:
-            # 微信未返回识别结果时的兜底提示(可在此接入腾讯云ASR)
-            wechat.send_custom_text(
-                openid, "🎤 未获取到语音识别结果, 请靠近点再说, "
-                        "或直接打字发送~")
-            return "success"
+            # 微信未返回识别结果: 未认证订阅号默认不提供语音识别(Recognition)字段,
+            # 此处改为被动回复提示(被动回复无需认证即可用)
+            print(f"[voice] 语音消息无Recognition: {request.data!r}")
+            return wechat.to_text_reply(
+                msg.get("ToUserName", ""), openid,
+                "🎤 未获取到语音识别结果。\n"
+                "未认证公众号暂不支持语音转文字, 请直接打字记账~")
     else:
         return "success"
 
@@ -406,7 +408,16 @@ def wechat_callback():
         if missing:
             reply += "\n❌ 未找到:\n" + "\n".join(missing)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-    if text in ("分析总结", "分析"):
+    # AI分析: 支持 分析 / 分析本月 / 分析上月 / 分析上周 / 分析本周 / 分析今年 / 分析去年
+    m_ana = re.match(r"^(?:分析|分析总结|分析本月|月分析)\s*$", text) or \
+            re.match(r"^分析(本月|上月|本周|上周|今年|去年)\s*$", text)
+    if m_ana and not (text in ("分析", "分析总结", "分析本月", "月分析")):
+        # 非本月区间: 暂时给出支持范围提示, 不落入记账
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                    "🤖 AI分析当前支持「分析」(本月)、"
+                                    "「分析上月」等本月维度查询\n"
+                                    "周报/年报请分别发「周报」「年报」查询")
+    if text in ("分析", "分析总结", "分析本月", "月分析"):
         month = datetime.now().strftime("%Y-%m")
         m = db.month_stats(openid, month)
         cats = db.month_by_category(openid, month)
