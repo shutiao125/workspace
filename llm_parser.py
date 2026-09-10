@@ -69,13 +69,10 @@ def _regex_parse(text: str) -> dict:
         or re.search(r"(\d+(?:\.\d+)?)", text)
     amount = round(float(m.group(1)), 2) if m else 0.0
     rtype = "收入" if any(k in text for k in ("工资", "到账", "收入", "进账", "收到红包")) else "支出"
-    category, subcategory = "其他", ""
-    for pattern, cat in KEYWORD_CATEGORY:
-        if re.search(pattern, text):
-            category = cat
-            break
+    # 类别直接用用户输入的文字, 不再归类到预设大分类
+    category = text[:20]
     return {"date": str(d), "type": rtype, "category": category,
-            "subcategory": subcategory, "amount": amount, "note": text[:20]}
+            "subcategory": "", "amount": amount, "note": text[:20]}
 
 
 REPORT_PROMPT = """你是记账助手。以下是用户{month}月的收支统计(JSON):
@@ -179,21 +176,22 @@ def annual_report(year: str, data: dict) -> str | None:
 
 
 def parse_record(text: str) -> dict:
-    """入口: 优先LLM解析, 失败/未配置则正则兜底"""
+    """入口: 优先按"名称 金额"取类别(用户输入什么类别就记什么, 如"咖啡6"->咖啡);
+    无法干净拆分时再用LLM/正则兜底"""
+    items = tokenize_amounts(text)
+    if items and len(items) == 1:
+        name, amt = items[0]
+        today = str(datetime.date.today())
+        rtype = "收入" if any(k in name for k in
+                              ("工资", "到账", "收入", "进账", "收到红包")) else "支出"
+        return {"date": today, "type": rtype, "category": name,
+                "subcategory": "", "amount": amt, "note": name}
     if LLM_API_KEY:
         try:
             return _llm_parse(text)
         except Exception as e:
             print(f"[llm_parser] LLM解析失败, 使用正则兜底: {e}")
     return _regex_parse(text)
-
-
-def classify(note: str) -> str:
-    """按关键词给一个消费项分类"""
-    for pattern, cat in KEYWORD_CATEGORY:
-        if re.search(pattern, note):
-            return cat
-    return "其他"
 
 
 def tokenize_amounts(body: str):
@@ -215,9 +213,10 @@ def tokenize_amounts(body: str):
 
 
 def parse_batch(text: str):
-    """连续多笔"名称+金额"记账, 自动分类: "奶茶6 洗澡2 喝水3"
-    返回 [(名称, 金额, 分类)]; 不是≥2笔的连续批量时返回 None(走单笔逻辑)"""
+    """连续多笔"名称+金额"记账: "奶茶6 洗澡2 喝水3"
+    返回 [(名称, 金额, 分类)]; 不是≥2笔的连续批量时返回 None(走单笔逻辑)
+    类别直接用用户输入的名称, 不做预设大分类"""
     items = tokenize_amounts(text)
     if not items or len(items) < 2:
         return None
-    return [(n, a, classify(n)) for n, a in items]
+    return [(n, a, n) for n, a in items]

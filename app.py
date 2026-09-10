@@ -13,7 +13,7 @@ from config import (WECHAT_TOKEN, ALLOWED_OPENIDS, PUSH_TOKEN,
 import wechat
 import db
 from llm_parser import (parse_record, ai_report, parse_batch,
-                        classify, tokenize_amounts, annual_report, ai_summary)
+                        tokenize_amounts, annual_report, ai_summary)
 from report import (build_daily_report, build_weekly_report,
                     build_annual_report, push_daily, push_weekly, push_annual)
 
@@ -36,7 +36,7 @@ HELP = ("📌 记账详细命令:\n"
         "  直接发文字, 例如:\n"
         "    「午饭35」「打车花20」「发工资12000」\n"
         "    「昨天买书58」「补记2026年9月5日吃饭30」\n"
-        "    「奶茶6 洗澡2 喝水3」——一次记多笔, 自动分类\n"
+        "    「奶茶6 洗澡2 喝水3」——一次记多笔\n"
         "🔎 查账:\n"
         "  最近——查看最近5条记录\n"
         "  本月——查看本月记录情况\n"
@@ -346,11 +346,12 @@ def wechat_callback():
     #   / 删除2026-09-07 餐饮 35 / 删除昨天 打车 20块 / 删除9月7日 餐饮:35
     #   / 批量: 删除9月7日 奶茶6 洗澡2 喝水3
     m_del = re.match(
-        r"^\s*删除\s*(?:"
-        r"(?P<rel>今天|昨天)|"                         # 删除今天/昨天 …
+        r"^\s*删除\s*"
+        r"(?:"                                    # 日期可选, 缺省默认今天
+        r"(?P<rel>今天|昨天)|"                     # 删除今天/昨天 …
         r"(?:(?P<y>\d{4})年)?\s*(?P<m>\d{1,2})月(?P<d>\d{1,2})[日号]|"  # 删除[YYYY年]M月D日 …
         r"(?P<y2>\d{4})[年/\-]?(?P<m2>\d{1,2})[月/\-]?(?P<d2>\d{1,2})[日号]?"  # 删除2026-09-07 / 2026/9/7 / 20260907
-        r")"
+        r")?"
         r"\s*[：:，,]?\s*"
         r"(?P<body>.+)$",
         text)
@@ -358,18 +359,20 @@ def wechat_callback():
         if m_del.group("rel"):                       # 今天/昨天
             back = 1 if m_del.group("rel") == "昨天" else 0
             day_s = (datetime.now() - timedelta(days=back)).strftime("%Y-%m-%d")
-        else:
-            try:
-                if m_del.group("m"):                 # M月D日 / YYYY年M月D日
-                    year = int(m_del.group("y")) if m_del.group("y") else datetime.now().year
-                    month, day = int(m_del.group("m")), int(m_del.group("d"))
-                else:                                # YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
-                    year = int(m_del.group("y2"))
-                    month, day = int(m_del.group("m2")), int(m_del.group("d2"))
-                day_s = f"{year}-{month:02d}-{day:02d}"
-            except ValueError:
-                return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                            "❌ 日期无效, 示例: 删除9月7日 餐饮 35")
+        elif m_del.group("m") or m_del.group("y"):   # M月D日 / YYYY年M月D日
+            year = int(m_del.group("y")) if m_del.group("y") else datetime.now().year
+            month, day = int(m_del.group("m")), int(m_del.group("d"))
+            day_s = f"{year}-{month:02d}-{day:02d}"
+        elif m_del.group("y2"):                      # YYYY-MM-DD / YYYY/MM/DD / YYYYMMDD
+            month, day = int(m_del.group("m2")), int(m_del.group("d2"))
+            day_s = f"{int(m_del.group('y2'))}-{month:02d}-{day:02d}"
+        else:                                        # 未写日期, 默认删除今天
+            day_s = datetime.now().strftime("%Y-%m-%d")
+        try:
+            datetime.strptime(day_s, "%Y-%m-%d")     # 校验日期合法(如2月30日会抛错)
+        except ValueError:
+            return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                        "❌ 日期无效, 示例: 删除9月7日 餐饮 35 或 删除其他0")
         items = tokenize_amounts(m_del.group("body"))
         if not items:
             return wechat.to_text_reply(
@@ -388,11 +391,10 @@ def wechat_callback():
             if more:
                 reply += f"\n⚠️ 还有{more}条相同记录, 再次发送本命令可继续删除"
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-        # 批量删除: 每个"名称 金额"项自动配分类精确定位
+        # 批量删除: 每个"名称 金额"项按用户输入名称精确定位
         deleted_lines, missing = [], []
         for note, amount in items:
-            cat = classify(note)
-            rec, _ = db.delete_record_by_match(openid, day_s, cat, amount, note)
+            rec, _ = db.delete_record_by_match(openid, day_s, note, amount, note)
             if rec is not None:
                 deleted_lines.append(f"  {note} ¥{amount:.2f}")
             else:
