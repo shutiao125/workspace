@@ -133,7 +133,7 @@ def _analysis_data(openid: str, period: str):
         stats = db.month_stats(openid, month)
         cats = db.month_by_category(openid, month)
         pstats = db.month_stats(openid, _prev_month(month))
-        label, plabel = month, "本月"
+        label, plabel = month, period
     elif period in ("本周", "上周"):
         base = now - timedelta(weeks=1) if period == "上周" else now
         start = base - timedelta(days=base.weekday())
@@ -144,13 +144,13 @@ def _analysis_data(openid: str, period: str):
         ps, pe = start - timedelta(weeks=1), start - timedelta(days=1)
         pstats = db.week_stats(openid, ps.date().isoformat(), pe.date().isoformat())
         label = f"{s[5:]}~{e[5:]}"
-        plabel = "本周"
+        plabel = period
     else:                                     # 今年 / 去年
         year = now.year if period == "今年" else now.year - 1
         stats = db.year_stats(openid, str(year))
         cats = db.year_by_category(openid, str(year))
         pstats = db.year_stats(openid, str(year - 1))
-        label, plabel = f"{year}年", "今年"
+        label, plabel = f"{year}年", period
     bal = round(stats["收入"] - stats["支出"], 2)
     bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
     data = {"expense": stats["支出"], "income": stats["收入"], "balance": bal_str,
@@ -166,6 +166,36 @@ def _prev_month(ref):
     else:
         y, mo = ref.year, ref.month
     return f"{y-1}-12" if mo == 1 else f"{y}-{mo-1:02d}"
+
+
+def _build_plain_analysis(label: str, plabel: str, data: dict) -> str:
+    """LLM超时的本地降级: 用数据库统计拼一段连贯的文字分析, 而非数字清单
+    plabel 为本月/上月/本周/上周/今年/去年, data 结构见 _analysis_data"""
+    exp, inc = data["expense"], data["income"]
+    top = sorted((data.get("分类支出") or {}).items(), key=lambda kv: -kv[1])
+    if not exp and not inc:
+        return f"{label} 期间没有支出和收入记录，本期无账可分析。"
+    pexp = data.get("上期支出", 0.0)
+    diff = exp - pexp
+    if diff > 0:
+        cm = f"比上期多花了 ¥{diff:.2f}"
+    elif diff < 0:
+        cm = f"比上期少花了 ¥{abs(diff):.2f}"
+    else:
+        cm = "与上期基本持平"
+    parts = [f"{plabel}支出 ¥{exp:.2f}，收入 ¥{inc:.2f}，结余 {data['balance']}，{cm}。"]
+    if top:
+        heads = "、".join(f"{c}（¥{v:.2f}）" for c, v in top[:3])
+        parts.append(f"支出主要集中在{heads}，其中「{top[0][0]}」花销最高。")
+    else:
+        parts.append("本期没有分类支出记录。")
+    if exp > inc:
+        parts.append("整体收不抵支，建议适当控制非必要消费，留意大额支出。")
+    elif exp == 0:
+        parts.append("本期几乎无支出，花销很克制。")
+    else:
+        parts.append("整体收支平衡，支出处于可控水平。")
+    return "".join(parts)
 
 
 def handle_record(openid: str, text: str, source: str, day: str = "") -> str:
@@ -462,26 +492,20 @@ def wechat_callback():
         if not data["expense"] and not data["income"]:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         f"📭 {label} 暂无收支记录, 记账后再来分析~")
-        # 硬超时3.5s: 无论底层LLM请求挂多久, 主流程都会按时降级返回(微信5秒被动回复)
+        # 硬超时4s: 无论如何, 主流程都会在4秒内降级返回(微信5秒被动回复)
         try:
             fut = _llm_pool.submit(ai_summary, plabel, data)
-            summary = fut.result(timeout=3.5)
+            summary = fut.result(timeout=4.0)
         except Exception as e:
-            print(f"[analysis] LLM超时/失败, 降级纯文本: {e}")
+            print(f"[analysis] LLM超时/失败, 降级本地文字分析: {e}")
             summary = None
         if summary:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         f"🤖 AI分析总结 {label}\n{summary}")
-        # AI超时/失败: 降级为纯文本统计秒回, 保证在微信5秒被动回复窗口内返回
-        top = ("、".join(f"{c}¥{v:.2f}" for c, v in list(data["分类支出"].items())[:3])
-               if data["分类支出"] else "暂无")
-        plain = (f"📊 {label}\n"
-                 f"支出 ¥{data['expense']:.2f}\n"
-                 f"收入 ¥{data['income']:.2f}\n"
-                 f"结余 {data['balance']}\n"
-                 f"支出Top: {top}\n"
-                 "(AI分析繁忙, 已为你显示统计概要)")
-        return wechat.to_text_reply(msg.get("ToUserName", ""), openid, plain)
+        # AI超时/失败: 降级为本地生成的"一段文字分析", 仍给出对整体情况的文字解读
+        plain = _build_plain_analysis(label, plabel, data)
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
+                                    f"🤖 AI分析总结 {label}\n{plain}")
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
 
