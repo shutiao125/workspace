@@ -103,8 +103,9 @@ SUMMARY_PROMPT = """你是记账助手。以下是用户{period}的记账统计(
 3. 给1条贴合本数据的、可执行的小建议(不要空泛说教)"""
 
 
-def ai_summary(period: str, data: dict) -> str | None:
-    """生成自然语气的周期总结(AI解读+建议), period 为"本月/上周/今年"等; 失败/未配Key返回None"""
+def ai_summary(period: str, data: dict, timeout: float = 4.0) -> str | None:
+    """生成自然语气的周期总结(AI解读+建议), period 为"本月/上周/今年"等; 失败/未配Key返回None
+    timeout 默认 4s: 微信被动回复限时5秒, 必须在此内返回或降级, 否则会触发 write error"""
     if not LLM_API_KEY:
         return None
     try:
@@ -117,7 +118,7 @@ def ai_summary(period: str, data: dict) -> str | None:
                           headers={"Authorization": f"Bearer {LLM_API_KEY}",
                                    "Content-Type": "application/json"},
                           data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                          timeout=15)
+                          timeout=timeout)
         if r.status_code != 200:
             print(f"[ai_summary] HTTP {r.status_code}: {r.text[:300]}")
             return None

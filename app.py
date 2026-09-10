@@ -458,11 +458,19 @@ def wechat_callback():
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         f"📭 {label} 暂无收支记录, 记账后再来分析~")
         summary = ai_summary(plabel, data)
-        if not summary:
+        if summary:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                        "🤖 AI分析暂不可用(未配置LLM Key或服务不可达)")
-        return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                    f"🤖 AI分析总结 {label}\n{summary}")
+                                        f"🤖 AI分析总结 {label}\n{summary}")
+        # AI超时/失败: 降级为纯文本统计秒回, 保证在微信5秒被动回复窗口内返回
+        top = ("、".join(f"{c}¥{v:.2f}" for c, v in list(data["分类支出"].items())[:3])
+               if data["分类支出"] else "暂无")
+        plain = (f"📊 {label}\n"
+                 f"支出 ¥{data['expense']:.2f}\n"
+                 f"收入 ¥{data['income']:.2f}\n"
+                 f"结余 {data['balance']}\n"
+                 f"支出Top: {top}\n"
+                 "(AI分析繁忙, 已为你显示统计概要)")
+        return wechat.to_text_reply(msg.get("ToUserName", ""), openid, plain)
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
 
