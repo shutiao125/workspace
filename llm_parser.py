@@ -93,26 +93,26 @@ ANNUAL_PROMPT = """你是记账助手。以下是用户{year}年度账单统计(
 支出最多的分类：{top}
 支出最多的月份：{top_month}"""
 
-SUMMARY_PROMPT = """你是记账助手。以下是用户{month}的记账统计(JSON):
+SUMMARY_PROMPT = """你是记账助手。以下是用户{period}的记账统计(JSON):
 {data}
 
-请用中文写一段自然的月结(约120字)，像朋友帮你复盘账单一样，一段话，不要列清单、不要用分点。
+请用中文写一段自然的总结(约120字)，像朋友帮你复盘账单一样，一段话，不要列清单、不要用分点。
 写到位这几点：
-1. 本月支出/收入/结余大概什么水平，跟【上月】比是增是减
+1. {period}支出/收入/结余大概什么水平，跟上期比是增是减
 2. 支出最多的分类是哪个，合不合理，简单聊聊
 3. 给1条贴合本数据的、可执行的小建议(不要空泛说教)"""
 
 
-def ai_summary(month: str, data: dict) -> str | None:
-    """生成自然语气的月度总结(AI解读+建议); 失败/未配Key返回None"""
+def ai_summary(period: str, data: dict) -> str | None:
+    """生成自然语气的周期总结(AI解读+建议), period 为"本月/上周/今年"等; 失败/未配Key返回None"""
     if not LLM_API_KEY:
         return None
     try:
-        fmt = dict(data) | {"month": month, "data": json.dumps(data, ensure_ascii=False)}
+        fmt = dict(data) | {"period": period, "data": json.dumps(data, ensure_ascii=False)}
         payload = {"model": LLM_MODEL, "temperature": 0.7,
                    "messages": [{"role": "system", "content": SUMMARY_PROMPT.format(
                        **fmt)},
-                                {"role": "user", "content": "请写月结"}]}
+                                {"role": "user", "content": "请写总结"}]}
         r = requests.post(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
                           headers={"Authorization": f"Bearer {LLM_API_KEY}",
                                    "Content-Type": "application/json"},

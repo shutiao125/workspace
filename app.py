@@ -119,6 +119,50 @@ def _cat_disp(r):
     return r["category"] + (f"·{r.get('subcategory')}" if r.get("subcategory") else "")
 
 
+def _analysis_data(openid: str, period: str):
+    """统计指定周期的收支供AI分析, period为 本月/上月/本周/上周/今年/去年
+    返回 (展示标题, 周期标签, data字典); data含 expense/income/balance/分类支出/上期支出/上期收入"""
+    now = datetime.now()
+    if period in ("本月", "上月"):
+        month = now.strftime("%Y-%m") if period == "本月" else _prev_month(now)
+        stats = db.month_stats(openid, month)
+        cats = db.month_by_category(openid, month)
+        pstats = db.month_stats(openid, _prev_month(month))
+        label, plabel = month, "本月"
+    elif period in ("本周", "上周"):
+        base = now - timedelta(weeks=1) if period == "上周" else now
+        start = base - timedelta(days=base.weekday())
+        end = start + timedelta(days=6)
+        s, e = start.date().isoformat(), end.date().isoformat()
+        stats = db.week_stats(openid, s, e)
+        cats = db.week_by_category(openid, s, e)
+        ps, pe = start - timedelta(weeks=1), start - timedelta(days=1)
+        pstats = db.week_stats(openid, ps.date().isoformat(), pe.date().isoformat())
+        label = f"{s[5:]}~{e[5:]}"
+        plabel = "本周"
+    else:                                     # 今年 / 去年
+        year = now.year if period == "今年" else now.year - 1
+        stats = db.year_stats(openid, str(year))
+        cats = db.year_by_category(openid, str(year))
+        pstats = db.year_stats(openid, str(year - 1))
+        label, plabel = f"{year}年", "今年"
+    bal = round(stats["收入"] - stats["支出"], 2)
+    bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
+    data = {"expense": stats["支出"], "income": stats["收入"], "balance": bal_str,
+            "分类支出": {c: v for c, v in cats},
+            "上期支出": pstats["支出"], "上期收入": pstats["收入"]}
+    return label, plabel, data
+
+
+def _prev_month(ref):
+    """返回 ref(YYYY-MM 或 datetime) 的上一个月字符串 YYYY-MM"""
+    if isinstance(ref, str):
+        y, mo = map(int, ref.split("-"))
+    else:
+        y, mo = ref.year, ref.month
+    return f"{y-1}-12" if mo == 1 else f"{y}-{mo-1:02d}"
+
+
 def handle_record(openid: str, text: str, source: str, day: str = "") -> str:
     """同步解析并入库, 返回确认文本(作为被动回复, 未认证订阅号无客服消息接口)
     day 非空时覆盖解析出的日期(供补记/修改指定日期使用)"""
@@ -403,41 +447,22 @@ def wechat_callback():
         if missing:
             reply += "\n❌ 未找到:\n" + "\n".join(missing)
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, reply)
-    # AI分析: 支持 分析 / 分析本月 / 分析上月 / 分析上周 / 分析本周 / 分析今年 / 分析去年
-    m_ana = re.match(r"^(?:分析|分析总结|分析本月|月分析)\s*$", text) or \
-            re.match(r"^分析(本月|上月|本周|上周|今年|去年)\s*$", text)
-    if m_ana and not (text in ("分析", "分析总结", "分析本月", "月分析")):
-        # 非本月区间: 暂时给出支持范围提示, 不落入记账
-        return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                    "🤖 AI分析当前支持「分析」(本月)、"
-                                    "「分析上月」等本月维度查询\n"
-                                    "周报/年报请分别发「周报」「年报」查询")
-    if text in ("分析", "分析总结", "分析本月", "月分析"):
-        month = datetime.now().strftime("%Y-%m")
-        m = db.month_stats(openid, month)
-        cats = db.month_by_category(openid, month)
-        if not cats:
+    # AI分析: 分析(本月) / 分析总结 / 分析上月 / 分析本周 / 分析上周 / 分析今年 / 分析去年
+    ana_periods = {"分析": "本月", "分析总结": "本月", "月分析": "本月", "分析本月": "本月",
+                   "分析上月": "上月", "分析本周": "本周", "分析上周": "上周",
+                   "分析今年": "今年", "分析去年": "去年"}
+    if text in ana_periods:
+        period = ana_periods[text]
+        label, plabel, data = _analysis_data(openid, period)
+        if not data["expense"] and not data["income"]:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                        "📭 本月暂无支出记录, 记账后再来分析~")
-        # 上月数据(供环比, 可能为空)
-        y, mo = month.split("-")
-        if mo == "01":
-            prev = f"{int(y)-1}-12"
-        else:
-            prev = f"{int(y)}-{int(mo)-1:02d}"
-        pm = db.month_stats(openid, prev)
-        bal = round(m["收入"] - m["支出"], 2)
-        bal_str = f"+{bal:.2f}" if bal > 0 else f"{bal:.2f}"
-        data = {"月份": month, "expense": m["支出"], "income": m["收入"],
-                "balance": bal_str,
-                "上月支出": pm["支出"], "上月收入": pm["收入"],
-                "分类支出": {c: v for c, v in cats}}
-        summary = ai_summary(month, data)
+                                        f"📭 {label} 暂无收支记录, 记账后再来分析~")
+        summary = ai_summary(plabel, data)
         if not summary:
             return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
                                         "🤖 AI分析暂不可用(未配置LLM Key或服务不可达)")
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid,
-                                    f"🤖 AI分析总结 {month}\n{summary}")
+                                    f"🤖 AI分析总结 {label}\n{summary}")
     if text in ("帮助", "help", "指令"):
         return wechat.to_text_reply(msg.get("ToUserName", ""), openid, HELP)
 
