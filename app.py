@@ -25,16 +25,15 @@ _seen_msgs = set()
 _seen_lock = threading.Lock()
 
 WELCOME = (
-    "👋 欢迎使用语音记账本!\n"
+    "👋 欢迎使用记账助手!\n"
     "直接发消息即可记账, 例如:\n"
     "  午饭花了35块\n"
     "  昨天打车去机场68元\n"
-    "  发工资啦 12000\n"
-    "也可以直接发语音, 我会自动转文字记账。\n\n"
+    "  发工资啦 12000\n\n"
     "命令: 【今日】【本月】【最近】【分析总结】【周报】【年报】【帮助】"
 )
 HELP = ("📌 记账详细命令:\n"
-        "  直接发文字或语音, 例如:\n"
+        "  直接发文字, 例如:\n"
         "    「午饭35」「打车花20」「发工资12000」\n"
         "    「昨天买书58」「补记2026年9月5日吃饭30」\n"
         "    「奶茶6 洗澡2 喝水3」——一次记多笔, 自动分类\n"
@@ -167,21 +166,15 @@ def wechat_callback():
     if msg.get("MsgId") and _is_duplicate(msg["MsgId"]):
         return "success"
 
-    # 提取文本: 文字消息 / 语音消息(优先微信自带识别)
+    # 提取文本: 文字消息 / 语音消息
     text, source = "", "text"
     if msg_type == "text":
         text = msg.get("Content", "").strip()
     elif msg_type == "voice":
-        source = "voice"
-        text = msg.get("Recognition", "").strip()
-        if not text:
-            # 微信未返回识别结果: 未认证订阅号默认不提供语音识别(Recognition)字段,
-            # 此处改为被动回复提示(被动回复无需认证即可用)
-            print(f"[voice] 语音消息无Recognition: {request.data!r}")
-            return wechat.to_text_reply(
-                msg.get("ToUserName", ""), openid,
-                "🎤 未获取到语音识别结果。\n"
-                "未认证公众号暂不支持语音转文字, 请直接打字记账~")
+        # 未认证公众号不提供语音识别, 语音记账已停用, 提示后不进入记账流程
+        return wechat.to_text_reply(
+            msg.get("ToUserName", ""), openid,
+            "🎤 语音记账功能已停用。\n请直接打字发送记账内容, 例如「午饭35」")
     else:
         return "success"
 
