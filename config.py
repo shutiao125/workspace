@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """全局配置: 全部支持环境变量覆盖, 也可直接改这里的默认值"""
 import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()          # 优先读取项目根目录 .env; 未安装/失败则静默跳过(仍可用系统环境变量)
+except Exception:
+    pass
 
 # ---------- 微信测试号配置 (申请地址: https://mp.weixin.qq.com/debug/cgi-bin/sandbox) ----------
 WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "")          # 敏感: 接口配置里的Token, 用环境变量设置
